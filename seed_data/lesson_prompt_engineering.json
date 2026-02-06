@@ -1,0 +1,12 @@
+{
+  "title": "Advanced Prompt Engineering",
+  "body": "Building on basic prompting techniques, advanced prompt engineering enables more reliable and sophisticated interactions with LLMs.\n\n**Chain-of-Thought (CoT) Prompting**: Encouraging the model to show its reasoning step-by-step before arriving at an answer. This significantly improves performance on math, logic, and multi-step reasoning tasks.\n\n**Few-Shot Prompting**: Providing examples of desired input-output pairs in the prompt to guide the model's behavior. Effective for formatting, style matching, and task specification.\n\n**System Prompt Design**: Crafting system-level instructions that define the model's persona, constraints, and behavioral guidelines. Critical for production applications.\n\n**Retrieval-Augmented Generation (RAG)**: Combining LLMs with external knowledge retrieval to ground responses in specific, up-to-date information. Reduces hallucination and enables domain-specific applications.\n\n**Prompt Chaining**: Breaking complex tasks into a sequence of simpler prompts, where each step's output feeds into the next. Enables more reliable multi-step workflows.\n\nFellows will implement each technique in hands-on labs during weeks 3-4 of the AISE program.",
+  "content_type": "lesson",
+  "metadata": {
+    "week": 3,
+    "module": "prompt-engineering",
+    "tags": ["prompts", "chain-of-thought", "few-shot", "rag", "prompt-chaining"],
+    "difficulty": "intermediate",
+    "estimated_time_minutes": 90
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "title": "Building AI Agents: From Concepts to Code",
+  "body": "AI Agents represent a paradigm shift from simple prompt-response interactions to autonomous, goal-directed AI systems.\n\n**What is an AI Agent?** An AI agent is a system that uses an LLM as its reasoning engine to perceive its environment, make decisions, and take actions to accomplish goals. Unlike simple chatbots, agents can use tools, maintain memory, and plan multi-step strategies.\n\n**Core Components**:\n- **Planning**: The agent's ability to break down complex goals into actionable steps. Techniques include ReAct (Reasoning + Acting), tree-of-thought planning, and reflexion.\n- **Tool Use**: Agents can call external tools (APIs, databases, code interpreters, web browsers) to interact with the world beyond text generation.\n- **Memory**: Short-term (conversation context) and long-term (vector stores, databases) memory allow agents to learn and maintain state across interactions.\n- **Evaluation**: Measuring agent performance through task completion rates, efficiency metrics, safety benchmarks, and human evaluation.\n\n**Agent Frameworks**: Popular frameworks include LangChain, LlamaIndex, CrewAI, and Anthropic's tool-use API. The AISE program uses a framework-agnostic approach, teaching core concepts that transfer across implementations.\n\n**Safety Considerations**: Agent systems introduce unique safety challenges including unintended tool use, goal misspecification, and cascade failures. Fellows will learn to build agents with appropriate guardrails and monitoring.",
+  "content_type": "lesson",
+  "metadata": {
+    "week": 5,
+    "module": "agents",
+    "tags": ["agents", "tool-use", "planning", "memory", "react", "frameworks"],
+    "difficulty": "intermediate",
+    "estimated_time_minutes": 120
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "title": "AI Safety Fundamentals",
+  "body": "AI Safety is a multidisciplinary field focused on ensuring that AI systems behave as intended and do not cause unintended harm. Core areas include:\n\n1. **Alignment**: Ensuring AI systems pursue goals that match human intentions. This involves reward modeling, RLHF (Reinforcement Learning from Human Feedback), and constitutional AI approaches.\n\n2. **Interpretability**: Understanding how AI models make decisions. Techniques include attention visualization, feature attribution, mechanistic interpretability, and probing classifiers.\n\n3. **Robustness**: Making AI systems reliable under distribution shift, adversarial inputs, and edge cases. Covers adversarial training, uncertainty quantification, and out-of-distribution detection.\n\n4. **Governance**: Frameworks for responsible AI development and deployment. Includes AI policy, safety standards, red teaming practices, and responsible disclosure.\n\nThe AISE program covers all four pillars across the 12-week curriculum, with hands-on projects in each area.",
+  "content_type": "lesson",
+  "metadata": {
+    "week": 1,
+    "module": "foundations",
+    "tags": ["ai-safety", "alignment", "interpretability", "robustness", "governance"],
+    "difficulty": "beginner",
+    "estimated_time_minutes": 60
+  }
+}

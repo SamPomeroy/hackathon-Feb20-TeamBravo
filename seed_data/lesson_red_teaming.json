@@ -1,0 +1,12 @@
+{
+  "title": "Red Teaming and AI Evaluation",
+  "body": "Red teaming is a structured approach to finding vulnerabilities, failure modes, and harmful behaviors in AI systems before they impact users.\n\n**Why Red Team?** Even well-aligned AI systems can exhibit unexpected behaviors under certain inputs or conditions. Red teaming proactively discovers these issues, enabling developers to fix them before deployment.\n\n**Red Teaming Techniques**:\n- **Prompt Injection**: Testing whether system prompts can be overridden or leaked through crafted user inputs.\n- **Jailbreaking**: Attempting to bypass safety guidelines through creative prompting strategies (role-playing, encoding, multi-turn manipulation).\n- **Bias Probing**: Systematically testing for demographic biases, stereotypes, and unfair treatment across protected categories.\n- **Edge Case Discovery**: Finding inputs that cause unexpected behavior, incorrect outputs, or system failures.\n- **Capability Elicitation**: Testing whether the model has dangerous capabilities (e.g., providing harmful instructions) that should be restricted.\n\n**Evaluation Frameworks**: Structured evaluation goes beyond red teaming to include automated benchmarks, human evaluation protocols, and continuous monitoring in production.\n\n**The AISE Approach**: Fellows participate in structured red teaming exercises during weeks 9-10, working in teams to evaluate both their own projects and partner teams' systems. This builds practical skills in adversarial thinking and defensive AI development.",
+  "content_type": "lesson",
+  "metadata": {
+    "week": 9,
+    "module": "evaluation",
+    "tags": ["red-teaming", "evaluation", "safety-testing", "prompt-injection", "jailbreaking"],
+    "difficulty": "advanced",
+    "estimated_time_minutes": 90
+  }
+}
