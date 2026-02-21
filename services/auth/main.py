@@ -14,7 +14,7 @@ import os
 import time
 import uuid
 import sqlite3
-
+import dotenv
 import bcrypt
 import jwt
 from fastapi import FastAPI, HTTPException
@@ -22,8 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from models import UserRegister, UserLogin, TokenVerifyRequest
 from database import init_db, get_conn
-
+from dotenv import load_dotenv
 # ── Config ────────────────────────────────────────────────────────────────────
+load_dotenv()
+
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY environment variable is not set. Add it to your .env file.")
@@ -52,20 +54,21 @@ async def startup():
 
 def hash_password(password: str) -> str:
     """bcrypt hash — replaces the MD5 disaster in the monolith."""
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode(), hashed.encode())
+    return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
 
 
 def create_token(user_id: str, username: str, role: str = "fellow") -> str:
+    now = int(time.time())
     payload = {
         "user_id": user_id,
         "username": username,
         "role": role,
-        "exp": time.time() + TOKEN_EXPIRY_SECONDS,
-        "iat": time.time(),
+        "iat": now,
+        "exp": now + TOKEN_EXPIRY_SECONDS,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
@@ -76,8 +79,14 @@ def create_token(user_id: str, username: str, role: str = "fellow") -> str:
 async def register(user: UserRegister):
     if len(user.username) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+    
+    password = user.password.strip()
+
     if len(user.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 8 non-space characters"
+        )
 
     user_id = str(uuid.uuid4())
     password_hash = hash_password(user.password)
@@ -114,7 +123,7 @@ async def login(user: UserLogin):
     ).fetchone()
     conn.close()
 
-    # verify_password check prevents timing attacks vs just returning 401 immediately
+    # With bcrypt, you must verify plaintext password against stored hash
     if not row or not verify_password(user.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -134,9 +143,8 @@ async def verify_token(body: TokenVerifyRequest):
     Returns the decoded payload so the gateway can pass user info downstream.
     """
     try:
+        # PyJWT will validate `exp` automatically and raise ExpiredSignatureError
         payload = jwt.decode(body.token, SECRET_KEY, algorithms=["HS256"])
-        if payload.get("exp", 0) < time.time():
-            raise HTTPException(status_code=401, detail="Token expired")
         return {"valid": True, "payload": payload}
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")

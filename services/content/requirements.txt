@@ -1,7 +1,5 @@
 fastapi==0.115.6
 uvicorn==0.34.0
 pyjwt==2.10.1
-httpx==0.28.1
 python-multipart==0.0.20
-bcrypt
-dotenv
+sqlalchemy==2.0.46
