@@ -6,7 +6,6 @@ and proper exception handling (no bare excepts).
 
 import json
 import os
-import sqlite3
 import time
 import tempfile
 
@@ -39,11 +38,9 @@ def _auth_header(user_id: str | None = "test-user") -> dict:
 
 
 def _count_rows() -> int:
-    conn = sqlite3.connect(TEST_DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM content")
-    n = c.fetchone()[0]
-    conn.close()
+    db = database.get_session()
+    n = db.query(database.DBContent).count()
+    db.close()
     return n
 
 
@@ -52,11 +49,10 @@ def _count_rows() -> int:
 @pytest.fixture(autouse=True)
 def _clean_db():
     """Wipe the content table and cache between tests."""
-    conn = sqlite3.connect(TEST_DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM content")
-    conn.commit()
-    conn.close()
+    db = database.get_session()
+    db.query(database.DBContent).delete()
+    db.commit()
+    db.close()
     database._content_cache = None
     yield
 

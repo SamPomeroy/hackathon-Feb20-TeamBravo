@@ -16,11 +16,12 @@ import json
 import os
 import uuid
 
-from fastapi import FastAPI, HTTPException, Header, UploadFile, File
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 
 from models import ContentUpload, ContentSearch
-from database import init_db, get_conn
+from database import init_db, get_db, DBContent
 
 def safe_json_loads(data: str) -> dict:
     if not data:
@@ -31,7 +32,15 @@ def safe_json_loads(data: str) -> dict:
         return {}
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Content Service", version="1.0.0")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    print("[content-service] Started on port 8003")
+    yield
+
+app = FastAPI(title="Content Service", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,18 +51,13 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def startup():
-    init_db()
-    print("[content-service] Started on port 8003")
-
-
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.post("/content/upload")
 async def upload_content(
     content: ContentUpload,
     x_user_id: str = Header(None),
+    db: Session = Depends(get_db),
 ):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Missing user identity headers from gateway")
@@ -63,18 +67,21 @@ async def upload_content(
 
     # FIX: use get_conn() which connects to DATABASE_PATH (the real file),
     # NOT sqlite3.connect(":memory:") like the monolith did.
-    conn = get_conn()
     try:
-        conn.execute(
-            """INSERT INTO content (id, title, body, content_type, metadata, uploaded_by, is_indexed)
-               VALUES (?, ?, ?, ?, ?, ?, 1)""",
-            (content_id, content.title, content.body, content.content_type, metadata_str, x_user_id),
+        new_content = DBContent(
+            id=content_id,
+            title=content.title,
+            body=content.body,
+            content_type=content.content_type,
+            metadata_json=metadata_str,
+            uploaded_by=x_user_id,
+            is_indexed=1
         )
-        conn.commit()
+        db.add(new_content)
+        db.commit()
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-    finally:
-        conn.close()
 
     # FIX: no cache to invalidate — search hits the DB directly now, so new content
     # is immediately searchable without any extra steps.
@@ -91,6 +98,7 @@ async def upload_content(
 async def upload_content_file(
     file: UploadFile = File(...),
     x_user_id: str = Header(None),
+    db: Session = Depends(get_db),
 ):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Missing user identity headers from gateway")
@@ -104,7 +112,6 @@ async def upload_content_file(
         raise HTTPException(status_code=400, detail=f"Could not read file: {str(e)}")
 
     items = data if isinstance(data, list) else [data]
-    conn = get_conn()
     uploaded_ids = []
 
     try:
@@ -113,24 +120,22 @@ async def upload_content_file(
                 continue  # skip malformed items, don't blow up the whole batch
             content_id = str(uuid.uuid4())
             metadata = item.get("metadata")
-            conn.execute(
-                """INSERT INTO content (id, title, body, content_type, metadata, uploaded_by, is_indexed)
-                   VALUES (?, ?, ?, ?, ?, ?, 1)""",
-                (
-                    content_id,
-                    item["title"],
-                    item["body"],
-                    item.get("content_type", "lesson"),
-                    json.dumps(metadata) if metadata else None,
-                    x_user_id,
-                ),
+            
+            new_content = DBContent(
+                id=content_id,
+                title=item["title"],
+                body=item["body"],
+                content_type=item.get("content_type", "lesson"),
+                metadata_json=json.dumps(metadata) if metadata else None,
+                uploaded_by=x_user_id,
+                is_indexed=1
             )
+            db.add(new_content)
             uploaded_ids.append(content_id)
-        conn.commit()
+        db.commit()
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
-    finally:
-        conn.close()
 
     return {
         "message": f"Successfully uploaded {len(uploaded_ids)} content items",
@@ -144,28 +149,23 @@ async def upload_content_file(
 async def search_content(
     search: ContentSearch,
     x_user_id: str = Header(None),
+    db: Session = Depends(get_db),
 ):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Missing user identity headers from gateway")
 
     # FIX: query the DB directly every time — no stale cache.
     # it_works_dont_ask_why() is gone. The DB is the source of truth.
-    conn = get_conn()
-    try:
-        rows = conn.execute(
-            "SELECT id, title, body, content_type, metadata FROM content WHERE is_indexed = 1"
-        ).fetchall()
-    finally:
-        conn.close()
+    rows = db.query(DBContent).filter(DBContent.is_indexed == 1).all()
 
     query_lower = search.query.lower()
     query_words = set(query_lower.split())
 
     results = []
     for row in rows:
-        title_lower = (row["title"] or "").lower()
-        body_lower = (row["body"] or "").lower()
-        metadata = safe_json_loads(row["metadata"])
+        title_lower = (row.title or "").lower()
+        body_lower = (row.body or "").lower()
+        metadata = safe_json_loads(row.metadata_json)
         tags = metadata.get("tags", [])
 
         score = 0
@@ -178,12 +178,12 @@ async def search_content(
                 score += 5
 
         if score > 0:
-            body = row["body"] or ""
+            body = row.body or ""
             results.append({
-                "id": row["id"],
-                "title": row["title"],
+                "id": row.id,
+                "title": row.title,
                 "body": body[:200] + "..." if len(body) > 200 else body,
-                "content_type": row["content_type"],
+                "content_type": row.content_type,
                 "score": score,
                 "metadata": metadata,
             })
@@ -193,14 +193,14 @@ async def search_content(
     # If nothing matched, return top items (same fallback behavior as monolith)
     if not results and rows:
         for row in rows[: search.limit]:
-            body = row["body"] or ""
+            body = row.body or ""
             results.append({
-                "id": row["id"],
-                "title": row["title"],
+                "id": row.id,
+                "title": row.title,
                 "body": body[:200] + "..." if len(body) > 200 else body,
-                "content_type": row["content_type"],
+                "content_type": row.content_type,
                 "score": 0,
-                "metadata": safe_json_loads(row["metadata"]),
+                "metadata": safe_json_loads(row.metadata_json),
             })
 
     return {
@@ -212,47 +212,43 @@ async def search_content(
 
 
 @app.get("/content")
-async def list_content(x_user_id: str = Header(None)):
+async def list_content(
+    x_user_id: str = Header(None),
+    db: Session = Depends(get_db),
+):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Missing user identity headers from gateway")
 
-    conn = get_conn()
-    try:
-        rows = conn.execute(
-            "SELECT id, title, body, content_type, metadata, created_at FROM content ORDER BY created_at DESC"
-        ).fetchall()
-    finally:
-        conn.close()
+    rows = db.query(DBContent).order_by(DBContent.created_at.desc()).all()
 
     content_list = []
     for row in rows:
-        body = row["body"] or ""
+        body = row.body or ""
         content_list.append({
-            "id": row["id"],
-            "title": row["title"],
+            "id": row.id,
+            "title": row.title,
             "body": body[:200] + "..." if len(body) > 200 else body,
-            "content_type": row["content_type"],
-            "metadata": safe_json_loads(row["metadata"]),
-            "created_at": row["created_at"],
+            "content_type": row.content_type,
+            "metadata": safe_json_loads(row.metadata_json),
+            "created_at": row.created_at,
         })
 
     return {"content": content_list, "total": len(content_list)}
 
 
 @app.get("/content/internal")
-async def list_content_internal():
+async def list_content_internal(db: Session = Depends(get_db)):
     """
     Internal endpoint for the chat service to fetch content for system prompt context.
     No auth required — only reachable service-to-service (not exposed via gateway).
     """
-    conn = get_conn()
-    try:
-        rows = conn.execute(
-            "SELECT id, title, body, content_type FROM content WHERE is_indexed = 1 ORDER BY created_at DESC LIMIT 10"
-        ).fetchall()
-    finally:
-        conn.close()
-    return {"content": [dict(row) for row in rows]}
+    rows = db.query(DBContent)\
+        .filter(DBContent.is_indexed == 1)\
+        .order_by(DBContent.created_at.desc())\
+        .limit(10)\
+        .all()
+    
+    return {"content": [{"id": row.id, "title": row.title, "body": row.body, "content_type": row.content_type} for row in rows]}
 
 
 @app.get("/health")
