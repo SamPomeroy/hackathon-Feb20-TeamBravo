@@ -206,18 +206,6 @@ async def search_content(
 
     results.sort(key=lambda x: x.score, reverse=True)
 
-    if not results and rows:
-        for row in rows[: search.limit]:
-            body = row.get("body") or ""
-            results.append(SearchResultItem(
-                id=row.get("id"),
-                title=row.get("title"),
-                body=body[:200] + "..." if len(body) > 200 else body,
-                content_type=row.get("content_type"),
-                score=0,
-                metadata=row.get("metadata") or {},
-            ))
-
     return SearchResponse(
         results=results[: search.limit],
         total=len(results),
