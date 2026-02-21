@@ -2,6 +2,7 @@ import json
 import uuid
 import os
 from datetime import datetime, timezone
+from collections import OrderedDict
 from sqlalchemy import create_engine, Column, String, Integer, Text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
@@ -20,7 +21,7 @@ class DBContent(Base):
     title = Column(String, nullable=False)
     body = Column(Text, nullable=False)
     content_type = Column(String, default="lesson")
-    metadata_json = Column("metadata", Text, nullable=True) # renamed python side attribute to metadata_json to avoid conflict with Base.metadata
+    metadata_json = Column("metadata", Text, nullable=True)
     created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())
     updated_at = Column(String, nullable=True)
     uploaded_by = Column(String, nullable=True)
@@ -89,20 +90,40 @@ def _seed_content(db: Session):
     db.commit()
     print("[content-service] Seeded default content.")
 
+MAX_CACHE_SIZE = 1000
 _content_cache = None
+
+def update_item_in_cache(item_dict: dict):
+    """
+    Updates or inserts a specific item into the memory cache using an LRU strategy.
+    If the cache hasn't been initialized yet, it does nothing
+    (the next read will pull the fresh state from the DB).
+    """
+    global _content_cache
+    if _content_cache is not None:
+        key = item_dict["id"]
+        _content_cache[key] = item_dict
+        _content_cache.move_to_end(key)
+        
+        # Evict oldest item if we exceed capacity
+        if len(_content_cache) > MAX_CACHE_SIZE:
+            _content_cache.popitem(last=False)
 
 def get_cached_content(force_refresh=False):
     """
     Retrieves indexed content from the database, caching the results in memory.
+    Implements an LRU cache bounded by MAX_CACHE_SIZE.
     """
     global _content_cache
     if _content_cache is None or force_refresh:
         db = get_session()
         try:
-            rows = db.query(DBContent).filter(DBContent.is_indexed == 1).all()
+            # Query up to MAX_CACHE_SIZE newest items
+            rows = db.query(DBContent).filter(DBContent.is_indexed == 1).order_by(DBContent.created_at.desc()).limit(MAX_CACHE_SIZE).all()
             
-            new_cache = {}
-            for row in rows:
+            new_cache = OrderedDict()
+            # Iterate in reverse to insert oldest first, so newest are most recently used
+            for row in reversed(rows):
                 try:
                     metadata_dict = json.loads(row.metadata_json) if row.metadata_json else {}
                 except json.JSONDecodeError:

@@ -1,16 +1,7 @@
 """
 Content Service
 Handles: content upload, search, listing
-Port: 8003
-
-Fixes from monolith:
-- BUG FIX 1: upload_content was writing to sqlite3.connect(":memory:") — an in-memory
-  DB that vanishes on close. Now writes to the real persistent DATABASE_PATH.
-- BUG FIX 2: search used a global _content_cache that was never invalidated after uploads.
-  Now queries the DB directly on every search — no cache, no staleness.
-- No copy-pasted auth — gateway injects x-user-id header
-- No bare except: pass — errors are logged and raised properly
-"""
+Port: 8003"""
 
 import json
 import os
@@ -25,7 +16,12 @@ from models import (
     UploadResponse, UploadFileResponse, SearchResponse, SearchResultItem,
     ListContentResponse, ContentItem, ListInternalContentResponse, InternalContentItem, HealthResponse
 )
-from database import init_db, get_db, DBContent
+from database import init_db, get_db, DBContent, update_item_in_cache, get_cached_content
+from exceptions import (
+    AuthException, InvalidFileException, FileReadException,
+    UploadFailedException, FileUploadFailedException
+)
+from dependencies import require_user_id
 
 def safe_json_loads(data: str) -> dict:
     if not data:
@@ -60,17 +56,13 @@ app.add_middleware(
 @app.post("/content/upload", response_model=UploadResponse)
 async def upload_content(
     content: ContentUpload,
-    x_user_id: str = Header(None),
+    x_user_id: str = Depends(require_user_id),
     db: Session = Depends(get_db),
 ):
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="Missing user identity headers from gateway")
 
     content_id = str(uuid.uuid4())
     metadata_str = json.dumps(content.metadata) if content.metadata else None
 
-    # FIX: use get_conn() which connects to DATABASE_PATH (the real file),
-    # NOT sqlite3.connect(":memory:") like the monolith did.
     try:
         new_content = DBContent(
             id=content_id,
@@ -83,12 +75,20 @@ async def upload_content(
         )
         db.add(new_content)
         db.commit()
+        
+        # Write-through cache: Update the cache gracefully without wiping it
+        cached_item = {
+            "id": content_id,
+            "title": content.title,
+            "body": content.body,
+            "content_type": content.content_type,
+            "metadata": content.metadata or {},
+        }
+        update_item_in_cache(cached_item)
+        
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-    # FIX: no cache to invalidate — search hits the DB directly now, so new content
-    # is immediately searchable without any extra steps.
+        raise UploadFailedException(str(e))
 
     return UploadResponse(
         message="Content uploaded successfully",
@@ -101,22 +101,21 @@ async def upload_content(
 @app.post("/content/upload-file", response_model=UploadFileResponse)
 async def upload_content_file(
     file: UploadFile = File(...),
-    x_user_id: str = Header(None),
+    x_user_id: str = Depends(require_user_id),
     db: Session = Depends(get_db),
 ):
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="Missing user identity headers from gateway")
 
     try:
         raw = await file.read()
         data = json.loads(raw)
     except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON file")
+        raise InvalidFileException()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read file: {str(e)}")
+        raise FileReadException(str(e))
 
     items = data if isinstance(data, list) else [data]
     uploaded_ids = []
+    new_cache_items = []
 
     try:
         for item in items:
@@ -124,6 +123,7 @@ async def upload_content_file(
                 continue  # skip malformed items, don't blow up the whole batch
             content_id = str(uuid.uuid4())
             metadata = item.get("metadata")
+            
             
             new_content = DBContent(
                 id=content_id,
@@ -136,10 +136,25 @@ async def upload_content_file(
             )
             db.add(new_content)
             uploaded_ids.append(content_id)
+            
+            # Prepare for write-through cache update
+            new_cache_items.append({
+                "id": content_id,
+                "title": item["title"],
+                "body": item["body"],
+                "content_type": item.get("content_type", "lesson"),
+                "metadata": metadata or {},
+            })
+            
         db.commit()
+        
+        # Write-through cache: add all new items to the existing memory cache
+        for cache_item in new_cache_items:
+            update_item_in_cache(cache_item)
+            
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+        raise FileUploadFailedException(str(e))
 
     return UploadFileResponse(
         message=f"Successfully uploaded {len(uploaded_ids)} content items",
@@ -152,24 +167,21 @@ async def upload_content_file(
 @app.post("/content/search", response_model=SearchResponse)
 async def search_content(
     search: ContentSearch,
-    x_user_id: str = Header(None),
+    x_user_id: str = Depends(require_user_id),
     db: Session = Depends(get_db),
 ):
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="Missing user identity headers from gateway")
 
-    # FIX: query the DB directly every time — no stale cache.
-    # it_works_dont_ask_why() is gone. The DB is the source of truth.
-    rows = db.query(DBContent).filter(DBContent.is_indexed == 1).all()
+    cached_content = get_cached_content()
+    rows = list(cached_content.values())
 
     query_lower = search.query.lower()
     query_words = set(query_lower.split())
 
     results = []
     for row in rows:
-        title_lower = (row.title or "").lower()
-        body_lower = (row.body or "").lower()
-        metadata = safe_json_loads(row.metadata_json)
+        title_lower = (row.get("title") or "").lower()
+        body_lower = (row.get("body") or "").lower()
+        metadata = row.get("metadata") or {}
         tags = metadata.get("tags", [])
 
         score = 0
@@ -182,46 +194,43 @@ async def search_content(
                 score += 5
 
         if score > 0:
-            body = row.body or ""
+            body = row.get("body") or ""
             results.append(SearchResultItem(
-                id=row.id,
-                title=row.title,
+                id=row.get("id"),
+                title=row.get("title"),
                 body=body[:200] + "..." if len(body) > 200 else body,
-                content_type=row.content_type,
+                content_type=row.get("content_type"),
                 score=score,
                 metadata=metadata,
             ))
 
     results.sort(key=lambda x: x.score, reverse=True)
 
-    # If nothing matched, return top items (same fallback behavior as monolith)
     if not results and rows:
         for row in rows[: search.limit]:
-            body = row.body or ""
+            body = row.get("body") or ""
             results.append(SearchResultItem(
-                id=row.id,
-                title=row.title,
+                id=row.get("id"),
+                title=row.get("title"),
                 body=body[:200] + "..." if len(body) > 200 else body,
-                content_type=row.content_type,
+                content_type=row.get("content_type"),
                 score=0,
-                metadata=safe_json_loads(row.metadata_json),
+                metadata=row.get("metadata") or {},
             ))
 
     return SearchResponse(
         results=results[: search.limit],
         total=len(results),
         query=search.query,
-        source="database",  # not cache — for real this time
+        source="cache",
     )
 
 
 @app.get("/content", response_model=ListContentResponse)
 async def list_content(
-    x_user_id: str = Header(None),
+    x_user_id: str = Depends(require_user_id),
     db: Session = Depends(get_db),
 ):
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="Missing user identity headers from gateway")
 
     rows = db.query(DBContent).order_by(DBContent.created_at.desc()).all()
 

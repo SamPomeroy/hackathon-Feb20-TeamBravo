@@ -120,13 +120,11 @@ class TestFileUploadInserts:
 class TestCacheInvalidation:
     def test_search_finds_newly_uploaded_content(self):
         """After upload, a search should return the new content (cache refreshed)."""
-        # Upload something
         client.post(
             "/content/upload",
             json={"title": "Cache Test", "body": "cache invalidation check"},
             headers=_auth_header(),
         )
-        # Search should find it
         resp = client.post(
             "/content/search",
             json={"query": "cache invalidation"},
@@ -151,6 +149,68 @@ class TestCacheInvalidation:
         )
         titles = [r["title"] for r in resp.json()["results"]]
         assert "File Cache Test" in titles
+
+
+# ── LRU Caching and Write-Through Cache Tests ────────────────
+
+class TestLRUCache:
+    def test_cache_initialization_and_retrieval(self):
+        """Test that get_cached_content initializes the cache from the DB."""
+        client.post(
+            "/content/upload",
+            json={"title": "Init 1", "body": "Body 1"},
+            headers=_auth_header(),
+        )
+        client.post(
+            "/content/upload",
+            json={"title": "Init 2", "body": "Body 2"},
+            headers=_auth_header(),
+        )
+        
+        database._content_cache = None
+        cache = database.get_cached_content()
+        assert len(cache) == 2
+        titles = [item["title"] for item in cache.values()]
+        assert "Init 1" in titles
+        assert "Init 2" in titles
+
+    def test_lru_eviction(self, monkeypatch):
+        """Test that the cache successfully evicts the least recently used items."""
+        monkeypatch.setattr(database, "MAX_CACHE_SIZE", 3)
+        
+        client.post("/content/upload", json={"title": "Item 1", "body": "B1"}, headers=_auth_header())
+        time.sleep(0.01)
+        client.post("/content/upload", json={"title": "Item 2", "body": "B2"}, headers=_auth_header())
+        time.sleep(0.01)
+        client.post("/content/upload", json={"title": "Item 3", "body": "B3"}, headers=_auth_header())
+        
+        cache = database.get_cached_content()
+        assert len(cache) == 3
+        
+        client.post("/content/upload", json={"title": "Item 4", "body": "B4"}, headers=_auth_header())
+        
+        cache = database.get_cached_content()
+        assert len(cache) == 3
+        titles = [item["title"] for item in cache.values()]
+        assert "Item 4" in titles
+        assert "Item 1" not in titles
+
+    def test_write_through_cache_inserts_without_refresh(self):
+        """Test that uploading triggers a write-through update, avoiding full refresh."""
+        database.get_cached_content(force_refresh=True)
+        assert database._content_cache is not None
+        assert len(database._content_cache) == 0
+        
+        resp = client.post("/content/upload", json={"title": "Write Through", "body": "B"}, headers=_auth_header())
+        assert resp.status_code == 200
+        content_id = resp.json()["content_id"]
+        
+        assert content_id in database._content_cache
+        assert database._content_cache[content_id]["title"] == "Write Through"
+        
+        search_resp = client.post("/content/search", json={"query": "Write Through"}, headers=_auth_header())
+        titles = [r["title"] for r in search_resp.json()["results"]]
+        assert "Write Through" in titles
 
 
 # ── Bug 4: No bare excepts — proper error responses ─────────
