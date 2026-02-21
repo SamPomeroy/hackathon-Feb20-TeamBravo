@@ -20,7 +20,11 @@ from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from models import ContentUpload, ContentSearch
+from models import (
+    ContentUpload, ContentSearch,
+    UploadResponse, UploadFileResponse, SearchResponse, SearchResultItem,
+    ListContentResponse, ContentItem, ListInternalContentResponse, InternalContentItem, HealthResponse
+)
 from database import init_db, get_db, DBContent
 
 def safe_json_loads(data: str) -> dict:
@@ -53,7 +57,7 @@ app.add_middleware(
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@app.post("/content/upload")
+@app.post("/content/upload", response_model=UploadResponse)
 async def upload_content(
     content: ContentUpload,
     x_user_id: str = Header(None),
@@ -86,15 +90,15 @@ async def upload_content(
     # FIX: no cache to invalidate — search hits the DB directly now, so new content
     # is immediately searchable without any extra steps.
 
-    return {
-        "message": "Content uploaded successfully",
-        "content_id": content_id,
-        "title": content.title,
-        "status": "indexed",  # actually true this time 🎉
-    }
+    return UploadResponse(
+        message="Content uploaded successfully",
+        content_id=content_id,
+        title=content.title,
+        status="indexed",
+    )
 
 
-@app.post("/content/upload-file")
+@app.post("/content/upload-file", response_model=UploadFileResponse)
 async def upload_content_file(
     file: UploadFile = File(...),
     x_user_id: str = Header(None),
@@ -137,15 +141,15 @@ async def upload_content_file(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
-    return {
-        "message": f"Successfully uploaded {len(uploaded_ids)} content items",
-        "count": len(uploaded_ids),
-        "content_ids": uploaded_ids,
-        "status": "indexed",
-    }
+    return UploadFileResponse(
+        message=f"Successfully uploaded {len(uploaded_ids)} content items",
+        count=len(uploaded_ids),
+        content_ids=uploaded_ids,
+        status="indexed",
+    )
 
 
-@app.post("/content/search")
+@app.post("/content/search", response_model=SearchResponse)
 async def search_content(
     search: ContentSearch,
     x_user_id: str = Header(None),
@@ -179,39 +183,39 @@ async def search_content(
 
         if score > 0:
             body = row.body or ""
-            results.append({
-                "id": row.id,
-                "title": row.title,
-                "body": body[:200] + "..." if len(body) > 200 else body,
-                "content_type": row.content_type,
-                "score": score,
-                "metadata": metadata,
-            })
+            results.append(SearchResultItem(
+                id=row.id,
+                title=row.title,
+                body=body[:200] + "..." if len(body) > 200 else body,
+                content_type=row.content_type,
+                score=score,
+                metadata=metadata,
+            ))
 
-    results.sort(key=lambda x: x["score"], reverse=True)
+    results.sort(key=lambda x: x.score, reverse=True)
 
     # If nothing matched, return top items (same fallback behavior as monolith)
     if not results and rows:
         for row in rows[: search.limit]:
             body = row.body or ""
-            results.append({
-                "id": row.id,
-                "title": row.title,
-                "body": body[:200] + "..." if len(body) > 200 else body,
-                "content_type": row.content_type,
-                "score": 0,
-                "metadata": safe_json_loads(row.metadata_json),
-            })
+            results.append(SearchResultItem(
+                id=row.id,
+                title=row.title,
+                body=body[:200] + "..." if len(body) > 200 else body,
+                content_type=row.content_type,
+                score=0,
+                metadata=safe_json_loads(row.metadata_json),
+            ))
 
-    return {
-        "results": results[: search.limit],
-        "total": len(results),
-        "query": search.query,
-        "source": "database",  # not cache — for real this time
-    }
+    return SearchResponse(
+        results=results[: search.limit],
+        total=len(results),
+        query=search.query,
+        source="database",  # not cache — for real this time
+    )
 
 
-@app.get("/content")
+@app.get("/content", response_model=ListContentResponse)
 async def list_content(
     x_user_id: str = Header(None),
     db: Session = Depends(get_db),
@@ -224,19 +228,19 @@ async def list_content(
     content_list = []
     for row in rows:
         body = row.body or ""
-        content_list.append({
-            "id": row.id,
-            "title": row.title,
-            "body": body[:200] + "..." if len(body) > 200 else body,
-            "content_type": row.content_type,
-            "metadata": safe_json_loads(row.metadata_json),
-            "created_at": row.created_at,
-        })
+        content_list.append(ContentItem(
+            id=row.id,
+            title=row.title,
+            body=body[:200] + "..." if len(body) > 200 else body,
+            content_type=row.content_type,
+            metadata=safe_json_loads(row.metadata_json),
+            created_at=row.created_at,
+        ))
 
-    return {"content": content_list, "total": len(content_list)}
+    return ListContentResponse(content=content_list, total=len(content_list))
 
 
-@app.get("/content/internal")
+@app.get("/content/internal", response_model=ListInternalContentResponse)
 async def list_content_internal(db: Session = Depends(get_db)):
     """
     Internal endpoint for the chat service to fetch content for system prompt context.
@@ -248,12 +252,14 @@ async def list_content_internal(db: Session = Depends(get_db)):
         .limit(10)\
         .all()
     
-    return {"content": [{"id": row.id, "title": row.title, "body": row.body, "content_type": row.content_type} for row in rows]}
+    return ListInternalContentResponse(
+        content=[InternalContentItem(id=row.id, title=row.title, body=row.body, content_type=row.content_type) for row in rows]
+    )
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 async def health():
-    return {"status": "ok", "service": "content"}
+    return HealthResponse(status="ok", service="content")
 
 
 if __name__ == "__main__":
